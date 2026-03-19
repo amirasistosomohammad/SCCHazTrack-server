@@ -16,6 +16,35 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class HazardController extends Controller
 {
+    private function checkUploadedFilesValid(Request $request, string $field)
+    {
+        if (! $request->hasFile($field)) {
+            return null;
+        }
+
+        foreach ((array) $request->file($field) as $file) {
+            if (! $file || ! method_exists($file, 'isValid')) {
+                continue;
+            }
+
+            if (! $file->isValid()) {
+                // Most commonly caused by server-side upload size limits (php.ini/nginx).
+                return response()->json([
+                    'message' => 'Attachment upload failed. Please use smaller image files.',
+                    'code' => 'UPLOAD_FAILED',
+                    'details' => [
+                        'upload_error_code' => (int) $file->getError(),
+                        'upload_max_filesize' => (string) ini_get('upload_max_filesize'),
+                        'post_max_size' => (string) ini_get('post_max_size'),
+                        'max_file_uploads' => (string) ini_get('max_file_uploads'),
+                    ],
+                ], 422);
+            }
+        }
+
+        return null;
+    }
+
     private function canReporterMutate(HazardReport $report, User $user): bool
     {
         if ($user->role === User::ROLE_ADMIN) {
@@ -136,6 +165,10 @@ class HazardController extends Controller
     {
         /** @var User $user */
         $user = $request->user();
+
+        if ($response = $this->checkUploadedFilesValid($request, 'attachments')) {
+            return $response;
+        }
 
         $data = $request->validate([
             'category_id' => ['required', 'integer', 'exists:hazard_categories,id'],
@@ -310,6 +343,10 @@ class HazardController extends Controller
     {
         /** @var User $user */
         $user = $request->user();
+
+        if ($response = $this->checkUploadedFilesValid($request, 'attachments')) {
+            return $response;
+        }
 
         $report = HazardReport::query()->findOrFail($id);
 
