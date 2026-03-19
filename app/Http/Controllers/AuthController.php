@@ -3,7 +3,6 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Mail;
@@ -27,32 +26,24 @@ class AuthController extends Controller
             'password' => ['required', 'string'],
         ]);
 
-        if (! Auth::attempt($credentials)) {
+        $email = mb_strtolower(trim((string) $credentials['email']));
+        $password = (string) $credentials['password'];
+
+        /** @var \App\Models\User|null $user */
+        $user = User::query()->where('email', $email)->first();
+        if (! $user || ! Hash::check($password, (string) $user->password)) {
             throw ValidationException::withMessages([
                 'email' => ['The provided credentials are incorrect.'],
             ]);
         }
 
-        $request->session()->regenerate();
-
-        /** @var \App\Models\User $user */
-        $user = $request->user();
-
         if (! $user->is_active) {
-            Auth::logout();
-            $request->session()->invalidate();
-            $request->session()->regenerateToken();
-
             throw ValidationException::withMessages([
                 'email' => ['This account is inactive.'],
             ]);
         }
 
         if (! $user->email_verified_at) {
-            Auth::logout();
-            $request->session()->invalidate();
-            $request->session()->regenerateToken();
-
             return response()->json([
                 'message' => 'Please verify your email address to continue.',
                 'code' => 'EMAIL_NOT_VERIFIED',
@@ -186,10 +177,6 @@ class AuthController extends Controller
                 'code' => 'ACCOUNT_INACTIVE',
             ], 200);
         }
-
-        // Auto-login after successful email verification.
-        Auth::login($user);
-        $request->session()->regenerate();
 
         $token = $user->createToken('spa')->plainTextToken;
 
@@ -399,10 +386,13 @@ class AuthController extends Controller
 
     public function logout(Request $request)
     {
-        Auth::logout();
-
-        $request->session()->invalidate();
-        $request->session()->regenerateToken();
+        // We authenticate API calls via Sanctum personal access tokens (Bearer).
+        // Revoke the current token instead of touching Laravel session state.
+        $user = $request->user();
+        $accessToken = $user?->currentAccessToken();
+        if ($accessToken) {
+            $accessToken->delete();
+        }
 
         return response()->json(['ok' => true]);
     }
