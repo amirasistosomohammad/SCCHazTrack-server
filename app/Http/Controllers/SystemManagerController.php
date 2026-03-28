@@ -91,9 +91,61 @@ class SystemManagerController extends Controller
             unset($data['password']);
         }
 
-        $user->fill($data)->save();
+        $user->fill($data);
+        if (array_key_exists('is_active', $data) && $data['is_active'] === true) {
+            // Clear deactivation notes when re-activating.
+            $user->deactivation_remarks = null;
+        }
+        $user->save();
 
         return response()->json(['data' => $user]);
+    }
+
+    public function deactivateUser(Request $request, int $id)
+    {
+        /** @var User $actor */
+        $actor = $request->user();
+        if ($actor->role !== User::ROLE_ADMIN) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        $user = User::query()->findOrFail($id);
+
+        if ($user->id === $actor->id) {
+            return response()->json(['message' => 'You cannot deactivate your own account.'], 422);
+        }
+
+        $data = $request->validate([
+            'remarks' => ['nullable', 'string', 'max:2000'],
+        ]);
+
+        $user->forceFill([
+            'is_active' => false,
+            'deactivation_remarks' => $data['remarks'] ?? null,
+        ])->save();
+
+        // Invalidate all existing sessions/tokens immediately so the reporter gets logged out.
+        $user->tokens()->delete();
+
+        return response()->json(['data' => $user]);
+    }
+
+    public function deleteUser(Request $request, int $id)
+    {
+        /** @var User $actor */
+        $actor = $request->user();
+        if ($actor->role !== User::ROLE_ADMIN) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        $user = User::query()->findOrFail($id);
+        if ($user->id === $actor->id) {
+            return response()->json(['message' => 'You cannot delete your own account.'], 422);
+        }
+
+        $user->delete();
+
+        return response()->json(['ok' => true]);
     }
 
     public function createCategory(Request $request)

@@ -6,9 +6,11 @@ use App\Models\HazardAttachment;
 use App\Models\HazardReport;
 use App\Models\HazardStatus;
 use App\Models\HazardStatusHistory;
+use App\Models\UserNotification;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
@@ -45,19 +47,50 @@ class HazardController extends Controller
         return null;
     }
 
-    private function canReporterMutate(HazardReport $report, User $user): bool
+    private function isMutableStatus(HazardReport $report): bool
     {
-        if ($user->role === User::ROLE_ADMIN) {
-            return true;
-        }
-
-        if ($report->reporter_user_id !== $user->id) {
-            return false;
-        }
-
         $key = strtolower((string) optional($report->currentStatus)->key);
-        // Reporters may only edit/delete while the report is still pending (or legacy `new`).
+        // Editable/deletable only while pending (or legacy `new`).
         return in_array($key, ['pending', 'new'], true);
+    }
+
+    private function formatRecordId(int $hazardReportId): string
+    {
+        return 'HZR-' . str_pad((string) $hazardReportId, 5, '0', STR_PAD_LEFT);
+    }
+
+    private function createNotification(User $recipient, ?HazardReport $report, string $type, string $title, string $message, ?string $statusKey = null): void
+    {
+        UserNotification::query()->create([
+            'user_id' => $recipient->id,
+            'hazard_report_id' => $report?->id,
+            'type' => $type,
+            'title' => $title,
+            'message' => $message,
+            'status_key' => $statusKey,
+            'read_at' => null,
+            'created_at' => now(),
+        ]);
+    }
+
+    private function sendHazardEmail(User $recipient, string $subject, string $body): void
+    {
+        if (! $recipient->email) {
+            return;
+        }
+
+        try {
+            Mail::raw($body, function ($m) use ($recipient, $subject) {
+                $m->to($recipient->email)->subject($subject);
+            });
+        } catch (\Throwable $e) {
+            // Do not block core hazard workflows if email delivery fails.
+            logger()->warning('Hazard email delivery failed', [
+                'recipient_email' => $recipient->email,
+                'subject' => $subject,
+                'error' => $e->getMessage(),
+            ]);
+        }
     }
 
     public function my(Request $request)
@@ -95,7 +128,7 @@ class HazardController extends Controller
         }
 
         $query = HazardReport::query()
-            ->with(['reporter', 'category', 'location', 'currentStatus', 'assignedTo'])
+            ->with(['reporter', 'category', 'location', 'currentStatus'])
             ->orderByDesc('created_at');
 
         if ($statusKey = $request->query('status_key')) {
@@ -105,7 +138,7 @@ class HazardController extends Controller
             }
         }
 
-        foreach (['category_id', 'location_id', 'assigned_to_user_id'] as $field) {
+        foreach (['category_id', 'location_id'] as $field) {
             if ($value = $request->query($field)) {
                 $query->where($field, $value);
             }
@@ -127,7 +160,12 @@ class HazardController extends Controller
 
         $perPage = min(max((int) $request->query('per_page', 10), 1), 50);
 
-        return response()->json($query->paginate($perPage));
+        $paginator = $query->paginate($perPage);
+        $paginator->getCollection()->transform(function (HazardReport $report) {
+            return $report->makeHidden(['assigned_to_user_id']);
+        });
+
+        return response()->json($paginator);
     }
 
     public function show(Request $request, int $id)
@@ -136,6 +174,7 @@ class HazardController extends Controller
         $user = $request->user();
 
         $report = HazardReport::query()
+            ->withTrashed()
             ->with([
                 'reporter',
                 'category',
@@ -233,7 +272,30 @@ class HazardController extends Controller
             return $report;
         });
 
-        $report->load(['category', 'location', 'currentStatus', 'attachments']);
+        $report->load(['reporter', 'category', 'location', 'currentStatus', 'attachments']);
+
+        // Notify reporter (in-app + email).
+        $recipient = $report->reporter;
+        $currentStatusKey = strtolower((string) optional($report->currentStatus)->key);
+        $currentStatusLabel = $report->currentStatus?->label ?? $currentStatusKey;
+        $recordId = $this->formatRecordId($report->id);
+        $recipientName = $recipient?->name ?? 'Reporter';
+
+        $title = "Hazard Report Submitted ({$recordId})";
+        $message = "Dear {$recipientName},\n\n" .
+            "Your hazard report ({$recordId}) has been submitted to the administrator for review.\n" .
+            "Current status: {$currentStatusLabel}.\n\n" .
+            "Thank you.";
+
+        $this->createNotification(
+            $recipient,
+            $report,
+            'submitted',
+            $title,
+            $message,
+            $currentStatusKey ?: 'pending'
+        );
+        $this->sendHazardEmail($recipient, "Hazard report submitted - {$recordId}", $message);
 
         return response()->json(['data' => $report], 201);
     }
@@ -246,8 +308,17 @@ class HazardController extends Controller
         $report = HazardReport::query()->with('currentStatus')->findOrFail($id);
 
         $isAdmin = $user->role === User::ROLE_ADMIN;
-        if (! $isAdmin && ! $this->canReporterMutate($report, $user)) {
+        if (! $isAdmin && $report->reporter_user_id !== $user->id) {
             return response()->json(['message' => 'Forbidden.'], 403);
+        }
+        if (! $this->isMutableStatus($report)) {
+            if (! $isAdmin) {
+                return response()->json(['message' => 'Forbidden.'], 403);
+            }
+            return response()->json([
+                'message' => 'This report can only be edited while status is Pending.',
+                'code' => 'REPORT_NOT_MUTABLE',
+            ], 422);
         }
 
         $data = $request->validate($isAdmin ? [
@@ -255,6 +326,8 @@ class HazardController extends Controller
             'category_id' => ['sometimes', 'integer', 'exists:hazard_categories,id'],
             'location_id' => ['sometimes', 'integer', 'exists:locations,id'],
             'severity' => ['sometimes', 'string', Rule::in(['low', 'medium', 'high', 'critical'])],
+            'observed_at' => ['nullable', 'date'],
+            'description' => ['sometimes', 'string', 'min:10'],
         ] : [
             'category_id' => ['sometimes', 'integer', 'exists:hazard_categories,id'],
             'location_id' => ['sometimes', 'integer', 'exists:locations,id'],
@@ -268,6 +341,47 @@ class HazardController extends Controller
 
         $report->load(['reporter', 'category', 'location', 'currentStatus', 'assignedTo', 'attachments']);
 
+        // Add a timeline/audit entry even though the status itself did not change.
+        $currentStatusId = $report->current_status_id;
+        $note = $isAdmin
+            ? 'Hazard record updated by administrator.'
+            : 'Hazard record updated by reporter.';
+
+        HazardStatusHistory::query()->create([
+            'hazard_report_id' => $report->id,
+            'from_status_id' => $currentStatusId,
+            'to_status_id' => $currentStatusId,
+            'changed_by_user_id' => $user->id,
+            'note' => $note,
+            'is_public' => true,
+            'created_at' => now(),
+        ]);
+
+        if ($isAdmin) {
+            // Notify reporter (in-app + email) for admin edits.
+            $recipient = $report->reporter;
+            $currentStatusKey = strtolower((string) optional($report->currentStatus)->key);
+            $currentStatusLabel = $report->currentStatus?->label ?? $currentStatusKey;
+            $recordId = $this->formatRecordId($report->id);
+            $recipientName = $recipient?->name ?? 'Reporter';
+
+            $title = "Hazard Report Updated ({$recordId})";
+            $message = "Dear {$recipientName},\n\n" .
+                "An administrator updated your hazard report ({$recordId}).\n" .
+                "Current status: {$currentStatusLabel}.\n\n" .
+                "Thank you.";
+
+            $this->createNotification(
+                $recipient,
+                $report,
+                'edited',
+                $title,
+                $message,
+                $currentStatusKey ?: null
+            );
+            $this->sendHazardEmail($recipient, "Hazard report updated - {$recordId}", $message);
+        }
+
         return response()->json(['data' => $report]);
     }
 
@@ -276,26 +390,65 @@ class HazardController extends Controller
         /** @var User $user */
         $user = $request->user();
 
-        $report = HazardReport::query()->with(['currentStatus', 'attachments', 'statusHistory'])->findOrFail($id);
+        $report = HazardReport::query()->with(['reporter', 'currentStatus', 'attachments', 'statusHistory'])->findOrFail($id);
 
         $isAdmin = $user->role === User::ROLE_ADMIN;
-        if (! $isAdmin && ! $this->canReporterMutate($report, $user)) {
+        if (! $isAdmin && $report->reporter_user_id !== $user->id) {
             return response()->json(['message' => 'Forbidden.'], 403);
         }
-
-        DB::transaction(function () use ($report) {
-            foreach ($report->attachments as $attachment) {
-                $disk = $attachment->disk ?: config('filesystems.default');
-                $path = $attachment->path;
-                if ($disk && $path) {
-                    Storage::disk($disk)->delete($path);
-                }
+        if (! $this->isMutableStatus($report)) {
+            if (! $isAdmin) {
+                return response()->json(['message' => 'Forbidden.'], 403);
             }
+            return response()->json([
+                'message' => 'This report can only be deleted while status is Pending.',
+                'code' => 'REPORT_NOT_MUTABLE',
+            ], 422);
+        }
 
-            $report->attachments()->delete();
-            $report->statusHistory()->delete();
-            $report->delete();
+        DB::transaction(function () use ($report, $user, $isAdmin) {
+            // Preserve hazard status history & attachments for audit/timeline after delete.
+            $note = $isAdmin
+                ? 'Report deleted by administrator.'
+                : 'Report deleted by reporter.';
+
+            HazardStatusHistory::query()->create([
+                'hazard_report_id' => $report->id,
+                'from_status_id' => $report->current_status_id,
+                'to_status_id' => $report->current_status_id,
+                'changed_by_user_id' => $user->id,
+                'note' => $note,
+                'is_public' => true,
+                'created_at' => now(),
+            ]);
+
+            $report->delete(); // soft delete (keeps timeline)
         });
+
+        if ($isAdmin) {
+            $recipient = $report->reporter;
+            $currentStatusKey = strtolower((string) optional($report->currentStatus)->key);
+            $currentStatusLabel = $report->currentStatus?->label ?? $currentStatusKey;
+            $recordId = $this->formatRecordId($report->id);
+            $recipientName = $recipient?->name ?? 'Reporter';
+
+            $title = "Hazard Report Deleted ({$recordId})";
+            $message = "Dear {$recipientName},\n\n" .
+                "Your hazard report ({$recordId}) has been deleted by an administrator.\n" .
+                "Last known status: {$currentStatusLabel}.\n\n" .
+                "If you believe this is an error, please contact system administrators.\n\n" .
+                "Thank you.";
+
+            $this->createNotification(
+                $recipient,
+                $report,
+                'deleted',
+                $title,
+                $message,
+                $currentStatusKey ?: null
+            );
+            $this->sendHazardEmail($recipient, "Hazard report deleted - {$recordId}", $message);
+        }
 
         return response()->json(['ok' => true]);
     }
@@ -309,9 +462,8 @@ class HazardController extends Controller
         }
 
         $data = $request->validate([
-            'to_status_key' => ['required', 'string', 'exists:hazard_statuses,key'],
+            'to_status_key' => ['required', 'string', Rule::in(['pending', 'in_progress', 'resolved']), 'exists:hazard_statuses,key'],
             'note' => ['nullable', 'string'],
-            'is_public' => ['sometimes', 'boolean'],
         ]);
 
         $report = HazardReport::query()->with('currentStatus')->findOrFail($id);
@@ -329,12 +481,40 @@ class HazardController extends Controller
                 'to_status_id' => $toStatus->id,
                 'changed_by_user_id' => $user->id,
                 'note' => $data['note'] ?? null,
-                'is_public' => (bool) ($data['is_public'] ?? true),
+                'is_public' => true,
                 'created_at' => now(),
             ]);
         });
 
         $report->refresh()->load(['reporter', 'category', 'location', 'currentStatus', 'assignedTo']);
+
+        // Notify reporter (in-app + email).
+        $recipient = $report->reporter;
+        $currentStatusKey = strtolower((string) optional($report->currentStatus)->key);
+        $currentStatusLabel = $report->currentStatus?->label ?? $currentStatusKey;
+        $recordId = $this->formatRecordId($report->id);
+        $recipientName = $recipient?->name ?? 'Reporter';
+
+        $title = "Hazard Status Updated ({$recordId})";
+        $message = "Dear {$recipientName},\n\n" .
+            "The status of your hazard report ({$recordId}) has been updated.\n" .
+            "New status: {$currentStatusLabel}.\n";
+
+        if (! empty($data['note'])) {
+            $message .= "\nAdministrator note:\n{$data['note']}\n";
+        }
+
+        $message .= "\nThank you.";
+
+        $this->createNotification(
+            $recipient,
+            $report,
+            'status_updated',
+            $title,
+            $message,
+            $currentStatusKey ?: $data['to_status_key']
+        );
+        $this->sendHazardEmail($recipient, "Hazard status updated - {$recordId}", $message);
 
         return response()->json(['data' => $report]);
     }

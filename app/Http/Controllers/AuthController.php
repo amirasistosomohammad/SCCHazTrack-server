@@ -38,9 +38,11 @@ class AuthController extends Controller
         }
 
         if (! $user->is_active) {
-            throw ValidationException::withMessages([
-                'email' => ['This account is inactive.'],
-            ]);
+            return response()->json([
+                'message' => 'This account is inactive.',
+                'accountStatus' => 'deactivated',
+                'deactivation_remarks' => $user->deactivation_remarks,
+            ], 403);
         }
 
         if (! $user->email_verified_at) {

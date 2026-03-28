@@ -34,6 +34,7 @@ class User extends Authenticatable
         'department',
         'phone',
         'is_active',
+        'deactivation_remarks',
     ];
 
     /**

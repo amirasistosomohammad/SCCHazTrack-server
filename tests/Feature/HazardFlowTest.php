@@ -81,14 +81,14 @@ class HazardFlowTest extends TestCase
         Sanctum::actingAs($admin);
 
         $change = $this->postJson("/api/hazards/{$reportId}/status", [
-            'to_status_key' => 'under_review',
+            'to_status_key' => 'in_progress',
             'note' => 'Checking details.',
             'is_public' => true,
         ]);
 
         $change->assertOk();
 
-        $statusId = HazardStatus::query()->where('key', 'under_review')->value('id');
+        $statusId = HazardStatus::query()->where('key', 'in_progress')->value('id');
         $this->assertSame($statusId, HazardReport::query()->findOrFail($reportId)->current_status_id);
     }
 
@@ -199,7 +199,7 @@ class HazardFlowTest extends TestCase
         $this->assertNull(HazardReport::query()->find($reportId));
     }
 
-    public function test_reporter_cannot_edit_or_delete_after_under_review(): void
+    public function test_reporter_cannot_edit_or_delete_after_in_progress(): void
     {
         $this->seed();
 
@@ -213,7 +213,7 @@ class HazardFlowTest extends TestCase
             'category_id' => $categoryId,
             'location_id' => $locationId,
             'severity' => 'low',
-            'description' => 'Reporter cannot edit once under review.',
+            'description' => 'Reporter cannot edit once in progress.',
         ])->assertCreated();
 
         $reportId = $create->json('data.id');
@@ -222,7 +222,7 @@ class HazardFlowTest extends TestCase
         Sanctum::actingAs($admin);
 
         $this->postJson("/api/hazards/{$reportId}/status", [
-            'to_status_key' => 'under_review',
+            'to_status_key' => 'in_progress',
             'note' => 'Lock it.',
             'is_public' => true,
         ])->assertOk();
