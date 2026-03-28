@@ -38,7 +38,8 @@ return [
             'database' => env('DB_DATABASE', database_path('database.sqlite')),
             'prefix' => '',
             'foreign_key_constraints' => env('DB_FOREIGN_KEYS', true),
-            'busy_timeout' => null,
+            // Reduce intermittent "database is locked" under concurrent requests (common on small hosts).
+            'busy_timeout' => env('DB_BUSY_TIMEOUT', 5000),
             'journal_mode' => null,
             'synchronous' => null,
             'transaction_mode' => 'DEFERRED',
@@ -61,6 +62,7 @@ return [
             'engine' => null,
             'options' => extension_loaded('pdo_mysql') ? array_filter([
                 (PHP_VERSION_ID >= 80500 ? Mysql::ATTR_SSL_CA : PDO::MYSQL_ATTR_SSL_CA) => env('MYSQL_ATTR_SSL_CA'),
+                PDO::ATTR_TIMEOUT => env('DB_ATTR_TIMEOUT', 25) ?: null,
             ]) : [],
         ],
 
@@ -81,6 +83,7 @@ return [
             'engine' => null,
             'options' => extension_loaded('pdo_mysql') ? array_filter([
                 (PHP_VERSION_ID >= 80500 ? Mysql::ATTR_SSL_CA : PDO::MYSQL_ATTR_SSL_CA) => env('MYSQL_ATTR_SSL_CA'),
+                PDO::ATTR_TIMEOUT => env('DB_ATTR_TIMEOUT', 25) ?: null,
             ]) : [],
         ],
 
@@ -97,6 +100,9 @@ return [
             'prefix_indexes' => true,
             'search_path' => 'public',
             'sslmode' => env('DB_SSLMODE', 'prefer'),
+            'options' => extension_loaded('pdo_pgsql') ? array_filter([
+                PDO::ATTR_TIMEOUT => env('DB_ATTR_TIMEOUT', 25) ?: null,
+            ]) : [],
         ],
 
         'sqlsrv' => [
