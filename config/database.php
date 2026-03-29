@@ -1,7 +1,60 @@
 <?php
 
 use Illuminate\Support\Str;
-use Pdo\Mysql;
+
+$mysqlPdoOptions = static function (): array {
+    if (! extension_loaded('pdo_mysql')) {
+        return [];
+    }
+
+    $opts = [];
+
+    $caEnv = env('MYSQL_ATTR_SSL_CA');
+    $bundledCa = dirname(__DIR__).'/docker/digitalocean-ca-certificate.crt';
+    $ca = null;
+    if (is_string($caEnv) && $caEnv !== '' && is_readable($caEnv)) {
+        $ca = $caEnv;
+    } elseif (is_readable($bundledCa)) {
+        $ca = $bundledCa;
+    }
+
+    // Avoid `Pdo\Mysql` in static analysis (PHP 8.5+); `constant()` is valid at runtime.
+    $sslCaConstant = PHP_VERSION_ID >= 80500
+        ? (int) constant('Pdo\\Mysql::ATTR_SSL_CA')
+        : \PDO::MYSQL_ATTR_SSL_CA;
+
+    if ($ca !== null) {
+        $opts[$sslCaConstant] = $ca;
+    }
+
+    $host = (string) env('DB_HOST', '');
+    $sslFlag = filter_var(env('MYSQL_SSL', null), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+    if ($sslFlag === null) {
+        // DigitalOcean Managed MySQL (and similar) requires TLS on public endpoints.
+        $sslFlag = str_contains($host, 'digitalocean');
+    }
+
+    $timeout = (int) env('DB_ATTR_TIMEOUT', 25);
+    if ($timeout > 0) {
+        $opts[PDO::ATTR_TIMEOUT] = $timeout;
+    }
+
+    if ($sslFlag) {
+        $verifyDefault = $ca !== null;
+        $verify = filter_var(
+            env('MYSQL_SSL_VERIFY_SERVER_CERT', $verifyDefault ? 'true' : 'false'),
+            FILTER_VALIDATE_BOOLEAN
+        );
+        if (! $verify) {
+            $opts[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = false;
+        }
+    }
+
+    return array_filter(
+        $opts,
+        static fn ($v) => $v !== null && $v !== ''
+    );
+};
 
 return [
 
@@ -51,7 +104,7 @@ return [
             'host' => env('DB_HOST', '127.0.0.1'),
             'port' => env('DB_PORT', '3306'),
             'database' => env('DB_DATABASE', 'laravel'),
-            'username' => env('DB_USERNAME', 'root'),
+            'username' => trim((string) env('DB_USERNAME', 'root')),
             'password' => env('DB_PASSWORD', ''),
             'unix_socket' => env('DB_SOCKET', ''),
             'charset' => env('DB_CHARSET', 'utf8mb4'),
@@ -60,10 +113,7 @@ return [
             'prefix_indexes' => true,
             'strict' => true,
             'engine' => null,
-            'options' => extension_loaded('pdo_mysql') ? array_filter([
-                (PHP_VERSION_ID >= 80500 ? Mysql::ATTR_SSL_CA : PDO::MYSQL_ATTR_SSL_CA) => env('MYSQL_ATTR_SSL_CA'),
-                PDO::ATTR_TIMEOUT => env('DB_ATTR_TIMEOUT', 25) ?: null,
-            ]) : [],
+            'options' => $mysqlPdoOptions(),
         ],
 
         'mariadb' => [
@@ -72,7 +122,7 @@ return [
             'host' => env('DB_HOST', '127.0.0.1'),
             'port' => env('DB_PORT', '3306'),
             'database' => env('DB_DATABASE', 'laravel'),
-            'username' => env('DB_USERNAME', 'root'),
+            'username' => trim((string) env('DB_USERNAME', 'root')),
             'password' => env('DB_PASSWORD', ''),
             'unix_socket' => env('DB_SOCKET', ''),
             'charset' => env('DB_CHARSET', 'utf8mb4'),
@@ -81,10 +131,7 @@ return [
             'prefix_indexes' => true,
             'strict' => true,
             'engine' => null,
-            'options' => extension_loaded('pdo_mysql') ? array_filter([
-                (PHP_VERSION_ID >= 80500 ? Mysql::ATTR_SSL_CA : PDO::MYSQL_ATTR_SSL_CA) => env('MYSQL_ATTR_SSL_CA'),
-                PDO::ATTR_TIMEOUT => env('DB_ATTR_TIMEOUT', 25) ?: null,
-            ]) : [],
+            'options' => $mysqlPdoOptions(),
         ],
 
         'pgsql' => [
@@ -93,7 +140,7 @@ return [
             'host' => env('DB_HOST', '127.0.0.1'),
             'port' => env('DB_PORT', '5432'),
             'database' => env('DB_DATABASE', 'laravel'),
-            'username' => env('DB_USERNAME', 'root'),
+            'username' => trim((string) env('DB_USERNAME', 'root')),
             'password' => env('DB_PASSWORD', ''),
             'charset' => env('DB_CHARSET', 'utf8'),
             'prefix' => '',

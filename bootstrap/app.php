@@ -12,6 +12,9 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // App Platform / load balancers: HTTPS, Host, and forwarded IPs must be trusted.
+        $middleware->trustProxies(at: '*');
+
         $middleware->append(\Illuminate\Http\Middleware\HandleCors::class);
 
         $middleware->alias([

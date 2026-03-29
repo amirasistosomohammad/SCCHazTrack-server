@@ -1,0 +1,10 @@
+Optional: save DigitalOcean's managed MySQL CA bundle as:
+  digitalocean-ca-certificate.crt
+in this folder (same directory as this file).
+
+Download from:
+  https://cacerts.digitalocean.com/digitalocean-ca-certificate.crt
+
+If this file is present, Laravel will verify the server certificate. If it is
+absent but MYSQL_SSL is enabled (default when DB_HOST contains "digitalocean"),
+the app connects with TLS and MYSQL_SSL_VERIFY_SERVER_CERT=false.
