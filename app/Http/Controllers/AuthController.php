@@ -281,13 +281,24 @@ class AuthController extends Controller
 
         $frontend = rtrim((string) config('app.frontend_url', env('FRONTEND_URL', 'http://localhost:5173')), '/');
         $resetUrl = $frontend.'/reset-password?token='.$token;
+        $recipientName = $user->name;
+        $resetExpiresMinutes = self::RESET_TOKEN_TTL_MINUTES;
 
-        Mail::to($email)->send(new ResetPasswordLinkMail(
-            appName: config('app.name', 'SCC HazTrack'),
-            recipientName: $user->name,
-            resetUrl: $resetUrl,
-            expiresMinutes: self::RESET_TOKEN_TTL_MINUTES,
-        ));
+        dispatch(function () use ($email, $recipientName, $resetUrl, $resetExpiresMinutes) {
+            try {
+                Mail::to($email)->send(new ResetPasswordLinkMail(
+                    appName: config('app.name', 'SCC HazTrack'),
+                    recipientName: $recipientName,
+                    resetUrl: $resetUrl,
+                    expiresMinutes: $resetExpiresMinutes,
+                ));
+            } catch (\Throwable $e) {
+                logger()->warning('Password reset email delivery failed', [
+                    'email' => $email,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        })->afterResponse();
 
         return response()->json([
             'ok' => true,
@@ -490,13 +501,24 @@ class AuthController extends Controller
             now()->addMinutes(self::EMAIL_OTP_TTL_MINUTES)
         );
 
-        Mail::to($email)->send(new OtpCodeMail(
-            appName: config('app.name', 'SCC HazTrack'),
-            recipientName: $name,
-            code: $otp,
-            purpose: 'email_verify',
-            expiresMinutes: self::EMAIL_OTP_TTL_MINUTES
-        ));
+        $expiresMinutes = self::EMAIL_OTP_TTL_MINUTES;
+
+        dispatch(function () use ($email, $name, $otp, $expiresMinutes) {
+            try {
+                Mail::to($email)->send(new OtpCodeMail(
+                    appName: config('app.name', 'SCC HazTrack'),
+                    recipientName: $name,
+                    code: $otp,
+                    purpose: 'email_verify',
+                    expiresMinutes: $expiresMinutes
+                ));
+            } catch (\Throwable $e) {
+                logger()->warning('Email OTP delivery failed', [
+                    'email' => $email,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        })->afterResponse();
     }
 
     private function issueResetOtp(string $email, string $name): void
@@ -508,13 +530,24 @@ class AuthController extends Controller
             now()->addMinutes(self::RESET_OTP_TTL_MINUTES)
         );
 
-        Mail::to($email)->send(new OtpCodeMail(
-            appName: config('app.name', 'SCC HazTrack'),
-            recipientName: $name,
-            code: $otp,
-            purpose: 'password_reset',
-            expiresMinutes: self::RESET_OTP_TTL_MINUTES
-        ));
+        $expiresMinutes = self::RESET_OTP_TTL_MINUTES;
+
+        dispatch(function () use ($email, $name, $otp, $expiresMinutes) {
+            try {
+                Mail::to($email)->send(new OtpCodeMail(
+                    appName: config('app.name', 'SCC HazTrack'),
+                    recipientName: $name,
+                    code: $otp,
+                    purpose: 'password_reset',
+                    expiresMinutes: $expiresMinutes
+                ));
+            } catch (\Throwable $e) {
+                logger()->warning('Password reset OTP delivery failed', [
+                    'email' => $email,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        })->afterResponse();
     }
 
     private function emailOtpCacheKey(string $email): string

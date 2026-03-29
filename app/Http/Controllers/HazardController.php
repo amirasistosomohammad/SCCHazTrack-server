@@ -75,22 +75,25 @@ class HazardController extends Controller
 
     private function sendHazardEmail(User $recipient, string $subject, string $body): void
     {
-        if (! $recipient->email) {
+        $email = $recipient->email;
+        if (! $email) {
             return;
         }
 
-        try {
-            Mail::raw($body, function ($m) use ($recipient, $subject) {
-                $m->to($recipient->email)->subject($subject);
-            });
-        } catch (\Throwable $e) {
-            // Do not block core hazard workflows if email delivery fails.
-            logger()->warning('Hazard email delivery failed', [
-                'recipient_email' => $recipient->email,
-                'subject' => $subject,
-                'error' => $e->getMessage(),
-            ]);
-        }
+        // SMTP (e.g. Gmail) can stall for longer than the edge proxy allows → 504. Send after the JSON response.
+        dispatch(function () use ($email, $subject, $body) {
+            try {
+                Mail::raw($body, function ($m) use ($email, $subject) {
+                    $m->to($email)->subject($subject);
+                });
+            } catch (\Throwable $e) {
+                logger()->warning('Hazard email delivery failed', [
+                    'recipient_email' => $email,
+                    'subject' => $subject,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        })->afterResponse();
     }
 
     public function my(Request $request)
