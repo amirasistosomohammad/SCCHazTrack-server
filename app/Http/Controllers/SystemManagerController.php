@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\HazardCategory;
+use App\Models\HazardReport;
 use App\Models\Location;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -11,6 +12,33 @@ use Illuminate\Validation\Rule;
 
 class SystemManagerController extends Controller
 {
+    /**
+     * True when $candidateParentId is reachable from $locationId via child links (would create a cycle).
+     */
+    private function locationParentWouldCycle(int $locationId, int $candidateParentId): bool
+    {
+        if ($candidateParentId === $locationId) {
+            return true;
+        }
+        $queue = [$locationId];
+        $seen = [];
+        while ($queue) {
+            $id = array_shift($queue);
+            if ($id === $candidateParentId) {
+                return true;
+            }
+            if (isset($seen[$id])) {
+                continue;
+            }
+            $seen[$id] = true;
+            foreach (Location::query()->where('parent_id', $id)->pluck('id') as $cid) {
+                $queue[] = (int) $cid;
+            }
+        }
+
+        return false;
+    }
+
     public function listUsers(Request $request)
     {
         /** @var User $actor */
@@ -148,6 +176,32 @@ class SystemManagerController extends Controller
         return response()->json(['ok' => true]);
     }
 
+    public function listCategories(Request $request)
+    {
+        /** @var User $actor */
+        $actor = $request->user();
+        if ($actor->role !== User::ROLE_ADMIN) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        return response()->json([
+            'data' => HazardCategory::query()->orderBy('name')->get(),
+        ]);
+    }
+
+    public function listLocations(Request $request)
+    {
+        /** @var User $actor */
+        $actor = $request->user();
+        if ($actor->role !== User::ROLE_ADMIN) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        return response()->json([
+            'data' => Location::query()->orderBy('name')->get(),
+        ]);
+    }
+
     public function createCategory(Request $request)
     {
         /** @var User $actor */
@@ -192,6 +246,27 @@ class SystemManagerController extends Controller
         return response()->json(['data' => $category]);
     }
 
+    public function deleteCategory(Request $request, int $id)
+    {
+        /** @var User $actor */
+        $actor = $request->user();
+        if ($actor->role !== User::ROLE_ADMIN) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        $category = HazardCategory::query()->findOrFail($id);
+
+        if (HazardReport::query()->where('category_id', $category->id)->exists()) {
+            return response()->json([
+                'message' => 'This category cannot be deleted while hazard reports are still assigned to it.',
+            ], 422);
+        }
+
+        $category->delete();
+
+        return response()->json(['ok' => true]);
+    }
+
     public function createLocation(Request $request)
     {
         /** @var User $actor */
@@ -234,9 +309,44 @@ class SystemManagerController extends Controller
             'is_active' => ['sometimes', 'boolean'],
         ]);
 
+        if (array_key_exists('parent_id', $data) && $data['parent_id'] !== null) {
+            if ($this->locationParentWouldCycle($location->id, (int) $data['parent_id'])) {
+                return response()->json([
+                    'message' => 'Invalid parent: that assignment would create a circular reference.',
+                ], 422);
+            }
+        }
+
         $location->fill($data)->save();
 
         return response()->json(['data' => $location]);
+    }
+
+    public function deleteLocation(Request $request, int $id)
+    {
+        /** @var User $actor */
+        $actor = $request->user();
+        if ($actor->role !== User::ROLE_ADMIN) {
+            return response()->json(['message' => 'Forbidden.'], 403);
+        }
+
+        $location = Location::query()->findOrFail($id);
+
+        if (Location::query()->where('parent_id', $location->id)->exists()) {
+            return response()->json([
+                'message' => 'This campus cannot be deleted while other locations use it as a parent.',
+            ], 422);
+        }
+
+        if (HazardReport::query()->where('location_id', $location->id)->exists()) {
+            return response()->json([
+                'message' => 'This campus cannot be deleted while hazard reports are still assigned to it.',
+            ], 422);
+        }
+
+        $location->delete();
+
+        return response()->json(['ok' => true]);
     }
 }
 

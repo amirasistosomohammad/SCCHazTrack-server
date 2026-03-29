@@ -6,6 +6,7 @@ use App\Http\Controllers\HazardController;
 use App\Http\Controllers\LookupController;
 use App\Http\Controllers\MetricsController;
 use App\Http\Controllers\NotificationsController;
+use App\Http\Controllers\AdminBackupController;
 use App\Http\Controllers\SystemManagerController;
 
 Route::get('/ping', function () {
@@ -56,6 +57,14 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/metrics/summary', [MetricsController::class, 'summary']);
     Route::get('/metrics/dashboard', [MetricsController::class, 'dashboard']);
 
+    Route::get('/admin/backup/schedule', [AdminBackupController::class, 'schedule']);
+    Route::put('/admin/backup/schedule', [AdminBackupController::class, 'updateSchedule']);
+    Route::get('/admin/backup/list', [AdminBackupController::class, 'listBackups']);
+    Route::get('/admin/backup/download/latest', [AdminBackupController::class, 'downloadLatest']);
+    Route::get('/admin/backup/download/file/{filename}', [AdminBackupController::class, 'downloadFile'])
+        ->where('filename', '[a-zA-Z0-9._-]+\.sql');
+    Route::get('/admin/backup', [AdminBackupController::class, 'download']);
+
     Route::prefix('manager')->group(function () {
         Route::get('/users', [SystemManagerController::class, 'listUsers']);
         Route::post('/users', [SystemManagerController::class, 'createUser']);
@@ -63,11 +72,15 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::post('/users/{id}/deactivate', [SystemManagerController::class, 'deactivateUser']);
         Route::delete('/users/{id}', [SystemManagerController::class, 'deleteUser']);
 
+        Route::get('/categories', [SystemManagerController::class, 'listCategories']);
         Route::post('/categories', [SystemManagerController::class, 'createCategory']);
         Route::patch('/categories/{id}', [SystemManagerController::class, 'updateCategory']);
+        Route::delete('/categories/{id}', [SystemManagerController::class, 'deleteCategory']);
 
+        Route::get('/locations', [SystemManagerController::class, 'listLocations']);
         Route::post('/locations', [SystemManagerController::class, 'createLocation']);
         Route::patch('/locations/{id}', [SystemManagerController::class, 'updateLocation']);
+        Route::delete('/locations/{id}', [SystemManagerController::class, 'deleteLocation']);
     });
 });
 
